@@ -31,12 +31,12 @@
 	}
 
 	{{- range $iface := .Implements }}
-		func ({{ $model.Name|go }}) Is{{ $iface }}() {}
+		func ({{ $model.Name|go }}) Is{{ $iface|go }}() {}
 	{{- end }}
 {{- end}}
 
 {{ range $enum := .Enums }}
-	{{ with .Description|go }} {{.|prefixLines "// "}} {{end}}
+	{{ with .Description }} {{.|prefixLines "// "}} {{end}}
 	type {{.Name|go }} string
 	const (
 	{{- range $value := .Values}}

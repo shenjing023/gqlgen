@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
 	"go/token"
 	"go/types"
@@ -14,10 +15,12 @@ import (
 
 // Binder connects graphql types to golang types using static analysis
 type Binder struct {
-	pkgs       []*packages.Package
+	pkgs       map[string]*packages.Package
 	schema     *ast.Schema
 	cfg        *Config
 	References []*TypeReference
+	PkgErrors  PkgErrors
+	SawInvalid bool
 }
 
 func (c *Config) NewBinder(s *ast.Schema) (*Binder, error) {
@@ -26,19 +29,46 @@ func (c *Config) NewBinder(s *ast.Schema) (*Binder, error) {
 		return nil, err
 	}
 
+	mp := map[string]*packages.Package{}
+	var pkgErrs PkgErrors
 	for _, p := range pkgs {
+		populatePkg(mp, p)
 		for _, e := range p.Errors {
 			if e.Kind == packages.ListError {
-				return nil, p.Errors[0]
+				return nil, e
 			}
 		}
+		pkgErrs = append(pkgErrs, p.Errors...)
 	}
 
 	return &Binder{
-		pkgs:   pkgs,
-		schema: s,
-		cfg:    c,
+		pkgs:      mp,
+		schema:    s,
+		cfg:       c,
+		PkgErrors: pkgErrs,
 	}, nil
+}
+
+type PkgErrors []packages.Error
+
+func (p PkgErrors) Error() string {
+	var b bytes.Buffer
+	b.WriteString("packages.Load: ")
+	for _, e := range p {
+		b.WriteString(e.Error() + "\n")
+	}
+	return b.String()
+}
+
+func populatePkg(mp map[string]*packages.Package, p *packages.Package) {
+	imp := code.NormalizeVendor(p.PkgPath)
+	if _, ok := mp[imp]; ok {
+		return
+	}
+	mp[imp] = p
+	for _, p := range p.Imports {
+		populatePkg(mp, p)
+	}
 }
 
 func (b *Binder) TypePosition(typ types.Type) token.Position {
@@ -62,7 +92,22 @@ func (b *Binder) ObjectPosition(typ types.Object) token.Position {
 	return pkg.Fset.Position(typ.Pos())
 }
 
+func (b *Binder) FindTypeFromName(name string) (types.Type, error) {
+	pkgName, typeName := code.PkgAndType(name)
+	return b.FindType(pkgName, typeName)
+}
+
 func (b *Binder) FindType(pkgName string, typeName string) (types.Type, error) {
+	if pkgName == "" {
+		if typeName == "map[string]interface{}" {
+			return MapType, nil
+		}
+
+		if typeName == "interface{}" {
+			return InterfaceType, nil
+		}
+	}
+
 	obj, err := b.FindObject(pkgName, typeName)
 	if err != nil {
 		return nil, err
@@ -75,10 +120,9 @@ func (b *Binder) FindType(pkgName string, typeName string) (types.Type, error) {
 }
 
 func (b *Binder) getPkg(find string) *packages.Package {
-	for _, p := range b.pkgs {
-		if code.NormalizeVendor(find) == code.NormalizeVendor(p.PkgPath) {
-			return p
-		}
+	imp := code.NormalizeVendor(find)
+	if p, ok := b.pkgs[imp]; ok {
+		return p
 	}
 	return nil
 }
@@ -213,10 +257,7 @@ func (t *TypeReference) IsPtr() bool {
 }
 
 func (t *TypeReference) IsNilable() bool {
-	_, isPtr := t.GO.(*types.Pointer)
-	_, isMap := t.GO.(*types.Map)
-	_, isInterface := t.GO.(*types.Interface)
-	return isPtr || isMap || isInterface
+	return isNilable(t.GO)
 }
 
 func (t *TypeReference) IsSlice() bool {
@@ -238,32 +279,18 @@ func (t *TypeReference) IsScalar() bool {
 	return t.Definition.Kind == ast.Scalar
 }
 
-func (t *TypeReference) HasIsZero() bool {
-	it := t.GO
-	if ptr, isPtr := it.(*types.Pointer); isPtr {
-		it = ptr.Elem()
-	}
-	namedType, ok := it.(*types.Named)
-	if !ok {
-		return false
-	}
-
-	for i := 0; i < namedType.NumMethods(); i++ {
-		switch namedType.Method(i).Name() {
-		case "IsZero":
-			return true
-		}
-	}
-	return false
-}
-
 func (t *TypeReference) UniquenessKey() string {
 	var nullability = "O"
 	if t.GQL.NonNull {
 		nullability = "N"
 	}
 
-	return nullability + t.Definition.Name + "2" + templates.TypeIdentifier(t.GO)
+	var elemNullability = ""
+	if t.GQL.Elem != nil && t.GQL.Elem.NonNull {
+		// Fix for #896
+		elemNullability = "ᚄ"
+	}
+	return nullability + t.Definition.Name + "2" + templates.TypeIdentifier(t.GO) + elemNullability
 }
 
 func (t *TypeReference) MarshalFunc() string {
@@ -311,6 +338,11 @@ func isIntf(t types.Type) bool {
 }
 
 func (b *Binder) TypeReference(schemaType *ast.Type, bindTarget types.Type) (ret *TypeReference, err error) {
+	if !isValid(bindTarget) {
+		b.SawInvalid = true
+		return nil, fmt.Errorf("%s has an invalid type", schemaType.Name())
+	}
+
 	var pkgName, typeName string
 	def := b.schema.Types[schemaType.Name()]
 	defer func() {
@@ -368,7 +400,7 @@ func (b *Binder) TypeReference(schemaType *ast.Type, bindTarget types.Type) (ret
 		} else if hasMethod(obj.Type(), "MarshalGQL") && hasMethod(obj.Type(), "UnmarshalGQL") {
 			ref.GO = obj.Type()
 			ref.IsMarshaler = true
-		} else if underlying := basicUnderlying(obj.Type()); underlying != nil && underlying.Kind() == types.String {
+		} else if underlying := basicUnderlying(obj.Type()); def.IsLeafType() && underlying != nil && underlying.Kind() == types.String {
 			// Special case for named types wrapping strings. Used by default enum implementations.
 
 			ref.GO = obj.Type()
@@ -397,12 +429,24 @@ func (b *Binder) TypeReference(schemaType *ast.Type, bindTarget types.Type) (ret
 		return ref, nil
 	}
 
-	return nil, fmt.Errorf("%s has type compatible with %s", schemaType.Name(), bindTarget.String())
+	return nil, fmt.Errorf("%s is incompatible with %s", schemaType.Name(), bindTarget.String())
+}
+
+func isValid(t types.Type) bool {
+	basic, isBasic := t.(*types.Basic)
+	if !isBasic {
+		return true
+	}
+	return basic.Kind() != types.Invalid
 }
 
 func (b *Binder) CopyModifiersFromAst(t *ast.Type, base types.Type) types.Type {
 	if t.Elem != nil {
-		return types.NewSlice(b.CopyModifiersFromAst(t.Elem, base))
+		child := b.CopyModifiersFromAst(t.Elem, base)
+		if _, isStruct := child.Underlying().(*types.Struct); isStruct && !b.cfg.OmitSliceElementPointers {
+			child = types.NewPointer(child)
+		}
+		return types.NewSlice(child)
 	}
 
 	var isInterface bool
@@ -410,11 +454,21 @@ func (b *Binder) CopyModifiersFromAst(t *ast.Type, base types.Type) types.Type {
 		_, isInterface = named.Underlying().(*types.Interface)
 	}
 
-	if !isInterface && !t.NonNull {
+	if !isInterface && !isNilable(base) && !t.NonNull {
 		return types.NewPointer(base)
 	}
 
 	return base
+}
+
+func isNilable(t types.Type) bool {
+	if namedType, isNamed := t.(*types.Named); isNamed {
+		t = namedType.Underlying()
+	}
+	_, isPtr := t.(*types.Pointer)
+	_, isMap := t.(*types.Map)
+	_, isInterface := t.(*types.Interface)
+	return isPtr || isMap || isInterface
 }
 
 func hasMethod(it types.Type, name string) bool {

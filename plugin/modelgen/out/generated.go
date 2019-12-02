@@ -8,6 +8,11 @@ import (
 	"strconv"
 )
 
+// InterfaceWithDescription is an interface with a description
+type InterfaceWithDescription interface {
+	IsInterfaceWithDescription()
+}
+
 type MissingInterface interface {
 	IsMissingInterface()
 }
@@ -16,34 +21,90 @@ type MissingUnion interface {
 	IsMissingUnion()
 }
 
-type ExistingType struct {
-	Name     *string           `json:"name"`
-	Enum     *ExistingEnum     `json:"enum"`
-	Int      ExistingInterface `json:"int"`
-	Existing *MissingType      `json:"existing"`
+// UnionWithDescription is an union with a description
+type UnionWithDescription interface {
+	IsUnionWithDescription()
 }
-
-func (ExistingType) IsMissingUnion()      {}
-func (ExistingType) IsMissingInterface()  {}
-func (ExistingType) IsExistingInterface() {}
-func (ExistingType) IsExistingUnion()     {}
 
 type MissingInput struct {
-	Name *string      `json:"name"`
-	Enum *MissingEnum `json:"enum"`
+	Name *string      `json:"name" database:"MissingInputname"`
+	Enum *MissingEnum `json:"enum" database:"MissingInputenum"`
 }
 
-type MissingType struct {
-	Name     *string          `json:"name"`
-	Enum     *MissingEnum     `json:"enum"`
-	Int      MissingInterface `json:"int"`
-	Existing *ExistingType    `json:"existing"`
+type MissingTypeNotNull struct {
+	Name     string               `json:"name" database:"MissingTypeNotNullname"`
+	Enum     MissingEnum          `json:"enum" database:"MissingTypeNotNullenum"`
+	Int      MissingInterface     `json:"int" database:"MissingTypeNotNullint"`
+	Existing *ExistingType        `json:"existing" database:"MissingTypeNotNullexisting"`
+	Missing2 *MissingTypeNullable `json:"missing2" database:"MissingTypeNotNullmissing2"`
 }
 
-func (MissingType) IsMissingInterface()  {}
-func (MissingType) IsExistingInterface() {}
-func (MissingType) IsMissingUnion()      {}
-func (MissingType) IsExistingUnion()     {}
+func (MissingTypeNotNull) IsMissingInterface()  {}
+func (MissingTypeNotNull) IsExistingInterface() {}
+func (MissingTypeNotNull) IsMissingUnion()      {}
+func (MissingTypeNotNull) IsExistingUnion()     {}
+
+type MissingTypeNullable struct {
+	Name     *string             `json:"name" database:"MissingTypeNullablename"`
+	Enum     *MissingEnum        `json:"enum" database:"MissingTypeNullableenum"`
+	Int      MissingInterface    `json:"int" database:"MissingTypeNullableint"`
+	Existing *ExistingType       `json:"existing" database:"MissingTypeNullableexisting"`
+	Missing2 *MissingTypeNotNull `json:"missing2" database:"MissingTypeNullablemissing2"`
+}
+
+func (MissingTypeNullable) IsMissingInterface()  {}
+func (MissingTypeNullable) IsExistingInterface() {}
+func (MissingTypeNullable) IsMissingUnion()      {}
+func (MissingTypeNullable) IsExistingUnion()     {}
+
+// TypeWithDescription is a type with a description
+type TypeWithDescription struct {
+	Name *string `json:"name" database:"TypeWithDescriptionname"`
+}
+
+func (TypeWithDescription) IsUnionWithDescription() {}
+
+// EnumWithDescription is an enum with a description
+type EnumWithDescription string
+
+const (
+	EnumWithDescriptionCat EnumWithDescription = "CAT"
+	EnumWithDescriptionDog EnumWithDescription = "DOG"
+)
+
+var AllEnumWithDescription = []EnumWithDescription{
+	EnumWithDescriptionCat,
+	EnumWithDescriptionDog,
+}
+
+func (e EnumWithDescription) IsValid() bool {
+	switch e {
+	case EnumWithDescriptionCat, EnumWithDescriptionDog:
+		return true
+	}
+	return false
+}
+
+func (e EnumWithDescription) String() string {
+	return string(e)
+}
+
+func (e *EnumWithDescription) UnmarshalGQL(v interface{}) error {
+	str, ok := v.(string)
+	if !ok {
+		return fmt.Errorf("enums must be strings")
+	}
+
+	*e = EnumWithDescription(str)
+	if !e.IsValid() {
+		return fmt.Errorf("%s is not a valid EnumWithDescription", str)
+	}
+	return nil
+}
+
+func (e EnumWithDescription) MarshalGQL(w io.Writer) {
+	fmt.Fprint(w, strconv.Quote(e.String()))
+}
 
 type MissingEnum string
 

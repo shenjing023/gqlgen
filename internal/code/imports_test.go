@@ -3,6 +3,7 @@ package code
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -21,6 +22,12 @@ func TestImportPathForDir(t *testing.T) {
 
 	// directory does not exist
 	assert.Equal(t, "github.com/99designs/gqlgen/dos", ImportPathForDir(filepath.Join(wd, "..", "..", "dos")))
+
+	if runtime.GOOS == "windows" {
+		assert.Equal(t, "", ImportPathForDir("C:/doesnotexist"))
+	} else {
+		assert.Equal(t, "", ImportPathForDir("/doesnotexist"))
+	}
 }
 
 func TestNameForPackage(t *testing.T) {
@@ -29,4 +36,14 @@ func TestNameForPackage(t *testing.T) {
 	// does not contain go code, should still give a valid name
 	assert.Equal(t, "docs", NameForPackage("github.com/99designs/gqlgen/docs"))
 	assert.Equal(t, "github_com", NameForPackage("github.com"))
+}
+
+func TestNameForDir(t *testing.T) {
+	wd, err := os.Getwd()
+	require.NoError(t, err)
+
+	assert.Equal(t, "tmp", NameForDir("/tmp"))
+	assert.Equal(t, "code", NameForDir(wd))
+	assert.Equal(t, "internal", NameForDir(wd+"/.."))
+	assert.Equal(t, "main", NameForDir(wd+"/../.."))
 }

@@ -9,6 +9,14 @@ import (
 	"time"
 )
 
+type Animal interface {
+	IsAnimal()
+}
+
+type ContentChild interface {
+	IsContentChild()
+}
+
 type TestUnion interface {
 	IsTestUnion()
 }
@@ -33,6 +41,36 @@ type B struct {
 
 func (B) IsTestUnion() {}
 
+type Cat struct {
+	Species  string `json:"species"`
+	CatBreed string `json:"catBreed"`
+}
+
+func (Cat) IsAnimal() {}
+
+type CheckIssue896 struct {
+	ID *int `json:"id"`
+}
+
+type ContentPost struct {
+	Foo *string `json:"foo"`
+}
+
+func (ContentPost) IsContentChild() {}
+
+type ContentUser struct {
+	Foo *string `json:"foo"`
+}
+
+func (ContentUser) IsContentChild() {}
+
+type Dog struct {
+	Species  string `json:"species"`
+	DogBreed string `json:"dogBreed"`
+}
+
+func (Dog) IsAnimal() {}
+
 type EmbeddedDefaultScalar struct {
 	Value *string `json:"value"`
 }
@@ -51,9 +89,22 @@ type InnerObject struct {
 
 type InputDirectives struct {
 	Text          string           `json:"text"`
-	Inner         InnerDirectives  `json:"inner"`
+	NullableText  *string          `json:"nullableText"`
+	Inner         *InnerDirectives `json:"inner"`
 	InnerNullable *InnerDirectives `json:"innerNullable"`
 	ThirdParty    *ThirdParty      `json:"thirdParty"`
+}
+
+type InputWithEnumValue struct {
+	Enum EnumTest `json:"enum"`
+}
+
+type LoopA struct {
+	B *LoopB `json:"b"`
+}
+
+type LoopB struct {
+	A *LoopA `json:"a"`
 }
 
 // Since gqlgen defines default implementation for a Map scalar, this tests that the builtin is _not_
@@ -62,12 +113,21 @@ type Map struct {
 	ID string `json:"id"`
 }
 
+type NestedMapInput struct {
+	Map map[string]interface{} `json:"map"`
+}
+
+type ObjectDirectives struct {
+	Text         string  `json:"text"`
+	NullableText *string `json:"nullableText"`
+}
+
 type OuterInput struct {
-	Inner InnerInput `json:"inner"`
+	Inner *InnerInput `json:"inner"`
 }
 
 type OuterObject struct {
-	Inner InnerObject `json:"inner"`
+	Inner *InnerObject `json:"inner"`
 }
 
 type Slices struct {
@@ -79,7 +139,7 @@ type Slices struct {
 
 type User struct {
 	ID      int        `json:"id"`
-	Friends []User     `json:"friends"`
+	Friends []*User    `json:"friends"`
 	Created time.Time  `json:"created"`
 	Updated *time.Time `json:"updated"`
 }
@@ -135,6 +195,47 @@ type AsdfIt struct {
 
 type IIt struct {
 	ID string `json:"id"`
+}
+
+type EnumTest string
+
+const (
+	EnumTestOk EnumTest = "OK"
+	EnumTestNg EnumTest = "NG"
+)
+
+var AllEnumTest = []EnumTest{
+	EnumTestOk,
+	EnumTestNg,
+}
+
+func (e EnumTest) IsValid() bool {
+	switch e {
+	case EnumTestOk, EnumTestNg:
+		return true
+	}
+	return false
+}
+
+func (e EnumTest) String() string {
+	return string(e)
+}
+
+func (e *EnumTest) UnmarshalGQL(v interface{}) error {
+	str, ok := v.(string)
+	if !ok {
+		return fmt.Errorf("enums must be strings")
+	}
+
+	*e = EnumTest(str)
+	if !e.IsValid() {
+		return fmt.Errorf("%s is not a valid EnumTest", str)
+	}
+	return nil
+}
+
+func (e EnumTest) MarshalGQL(w io.Writer) {
+	fmt.Fprint(w, strconv.Quote(e.String()))
 }
 
 type Status string

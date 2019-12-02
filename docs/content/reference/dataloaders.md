@@ -14,7 +14,7 @@ fix it.
 Imagine if you had a simple query like this:
 
 ```graphql
-query { todos { users { name } }
+query { todos { users { name } } }
 ```
 
 and our todo.user resolver looks like this:
@@ -102,7 +102,7 @@ func DataloaderMiddleware(db *sql.DB, next http.Handler) http.Handler {
 				args := make([]interface{}, len(ids))
 				for i := 0; i < len(ids); i++ {
 					placeholders[i] = "?"
-					args[i] = i
+					args[i] = ids[i]
 				}
 
 				res := logAndQuery(db,
@@ -113,18 +113,21 @@ func DataloaderMiddleware(db *sql.DB, next http.Handler) http.Handler {
 				
 				defer res.Close()
 
-				users := make([]*User, len(ids))
-				i := 0
+				users := make(map[int]*User, len(ids))
 				for res.Next() {
-					users[i] = &User{}
-					err := res.Scan(&users[i].ID, &users[i].Name)
+					user := &User{}
+					err := res.Scan(&user.ID, &user.Name)
 					if err != nil {
 						panic(err)
 					}
-					i++
+					users[user.ID] = user
 				}
-
-				return users, nil
+				
+				output := make([]*User, len(ids))
+				for i, id := range ids {
+					output[i] = users[id]
+				}
+				return output, nil
 			},
 		}
 		ctx := context.WithValue(r.Context(), userLoaderKey, &userloader)
@@ -152,4 +155,4 @@ The generated UserLoader has a few other useful methods on it:
  - `LoadAll(keys)`: If you know up front you want a bunch users
  - `Prime(key, user)`: Used to sync state between similar loaders (usersById, usersByNote)
 
-You can see the full working example [here](https://github.com/vektah/gqlgen-tutorials/tree/master/dataloader)
+You can see the full working example [here](https://github.com/vektah/gqlgen-tutorials/tree/master/dataloader).

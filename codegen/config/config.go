@@ -6,23 +6,30 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
+
+	"golang.org/x/tools/go/packages"
 
 	"github.com/99designs/gqlgen/internal/code"
 	"github.com/pkg/errors"
 	"github.com/vektah/gqlparser"
 	"github.com/vektah/gqlparser/ast"
-	yaml "gopkg.in/yaml.v2"
+	"gopkg.in/yaml.v2"
 )
 
 type Config struct {
-	SchemaFilename StringList    `yaml:"schema,omitempty"`
-	Exec           PackageConfig `yaml:"exec"`
-	Model          PackageConfig `yaml:"model"`
-	Resolver       PackageConfig `yaml:"resolver,omitempty"`
-	Models         TypeMap       `yaml:"models,omitempty"`
-	StructTag      string        `yaml:"struct_tag,omitempty"`
+	SchemaFilename           StringList                 `yaml:"schema,omitempty"`
+	Exec                     PackageConfig              `yaml:"exec"`
+	Model                    PackageConfig              `yaml:"model,omitempty"`
+	Resolver                 PackageConfig              `yaml:"resolver,omitempty"`
+	AutoBind                 []string                   `yaml:"autobind"`
+	Models                   TypeMap                    `yaml:"models,omitempty"`
+	StructTag                string                     `yaml:"struct_tag,omitempty"`
+	Directives               map[string]DirectiveConfig `yaml:"directives,omitempty"`
+	OmitSliceElementPointers bool                       `yaml:"omit_slice_element_pointers,omitempty"`
+	SkipValidation           bool                       `yaml:"skip_validation,omitempty"`
 }
 
 var cfgFilenames = []string{".gqlgen.yml", "gqlgen.yml", "gqlgen.yaml"}
@@ -33,6 +40,7 @@ func DefaultConfig() *Config {
 		SchemaFilename: StringList{"schema.graphql"},
 		Model:          PackageConfig{Filename: "models_gen.go"},
 		Exec:           PackageConfig{Filename: "generated.go"},
+		Directives:     map[string]DirectiveConfig{},
 	}
 }
 
@@ -51,6 +59,13 @@ func LoadConfigFromDefaultLocations() (*Config, error) {
 	return LoadConfig(cfgFile)
 }
 
+var path2regex = strings.NewReplacer(
+	`.`, `\.`,
+	`*`, `.+`,
+	`\`, `[\\/]`,
+	`/`, `[\\/]`,
+)
+
 // LoadConfig reads the gqlgen.yml config file
 func LoadConfig(filename string) (*Config, error) {
 	config := DefaultConfig()
@@ -64,12 +79,50 @@ func LoadConfig(filename string) (*Config, error) {
 		return nil, errors.Wrap(err, "unable to parse config")
 	}
 
+	defaultDirectives := map[string]DirectiveConfig{
+		"skip":       {SkipRuntime: true},
+		"include":    {SkipRuntime: true},
+		"deprecated": {SkipRuntime: true},
+	}
+
+	for key, value := range defaultDirectives {
+		if _, defined := config.Directives[key]; !defined {
+			config.Directives[key] = value
+		}
+	}
+
 	preGlobbing := config.SchemaFilename
 	config.SchemaFilename = StringList{}
 	for _, f := range preGlobbing {
-		matches, err := filepath.Glob(f)
-		if err != nil {
-			return nil, errors.Wrapf(err, "failed to glob schema filename %s", f)
+		var matches []string
+
+		// for ** we want to override default globbing patterns and walk all
+		// subdirectories to match schema files.
+		if strings.Contains(f, "**") {
+			pathParts := strings.SplitN(f, "**", 2)
+			rest := strings.TrimPrefix(strings.TrimPrefix(pathParts[1], `\`), `/`)
+			// turn the rest of the glob into a regex, anchored only at the end because ** allows
+			// for any number of dirs in between and walk will let us match against the full path name
+			globRe := regexp.MustCompile(path2regex.Replace(rest) + `$`)
+
+			if err := filepath.Walk(pathParts[0], func(path string, info os.FileInfo, err error) error {
+				if err != nil {
+					return err
+				}
+
+				if globRe.MatchString(strings.TrimPrefix(path, pathParts[0])) {
+					matches = append(matches, path)
+				}
+
+				return nil
+			}); err != nil {
+				return nil, errors.Wrapf(err, "failed to walk schema at root %s", pathParts[0])
+			}
+		} else {
+			matches, err = filepath.Glob(f)
+			if err != nil {
+				return nil, errors.Wrapf(err, "failed to glob schema filename %s", f)
+			}
 		}
 
 		for _, m := range matches {
@@ -136,7 +189,7 @@ func (c *PackageConfig) normalize() error {
 	// If Package is not set, first attempt to load the package at the output dir. If that fails
 	// fallback to just the base dir name of the output filename.
 	if c.Package == "" {
-		c.Package = code.NameForPackage(c.ImportPath())
+		c.Package = code.NameForDir(c.Dir())
 	}
 
 	return nil
@@ -176,8 +229,10 @@ func (c *Config) Check() error {
 	if err := c.Exec.Check(); err != nil {
 		return errors.Wrap(err, "config.exec")
 	}
-	if err := c.Model.Check(); err != nil {
-		return errors.Wrap(err, "config.model")
+	if c.Model.IsDefined() {
+		if err := c.Model.Check(); err != nil {
+			return errors.Wrap(err, "config.model")
+		}
 	}
 	if c.Resolver.IsDefined() {
 		if err := c.Resolver.Check(); err != nil {
@@ -187,11 +242,14 @@ func (c *Config) Check() error {
 
 	// check packages names against conflict, if present in the same dir
 	// and check filenames for uniqueness
-	packageConfigList := []PackageConfig{
-		c.Model,
+	packageConfigList := []PackageConfig{}
+	if c.Model.IsDefined() {
+		packageConfigList = append(packageConfigList, c.Model)
+	}
+	packageConfigList = append(packageConfigList, []PackageConfig{
 		c.Exec,
 		c.Resolver,
-	}
+	}...)
 	filesMap := make(map[string]bool)
 	pkgConfigsByDir := make(map[string]PackageConfig)
 	for _, current := range packageConfigList {
@@ -259,10 +317,14 @@ func (tm TypeMap) ReferencedPackages() []string {
 	return pkgs
 }
 
-func (tm TypeMap) Add(Name string, goType string) {
-	modelCfg := tm[Name]
+func (tm TypeMap) Add(name string, goType string) {
+	modelCfg := tm[name]
 	modelCfg.Model = append(modelCfg.Model, goType)
-	tm[Name] = modelCfg
+	tm[name] = modelCfg
+}
+
+type DirectiveConfig struct {
+	SkipRuntime bool `yaml:"skip_runtime"`
 }
 
 func inStrSlice(haystack []string, needle string) bool {
@@ -308,8 +370,10 @@ func findCfgInDir(dir string) string {
 }
 
 func (c *Config) normalize() error {
-	if err := c.Model.normalize(); err != nil {
-		return errors.Wrap(err, "model")
+	if c.Model.IsDefined() {
+		if err := c.Model.normalize(); err != nil {
+			return errors.Wrap(err, "model")
+		}
 	}
 
 	if err := c.Exec.normalize(); err != nil {
@@ -324,6 +388,52 @@ func (c *Config) normalize() error {
 
 	if c.Models == nil {
 		c.Models = TypeMap{}
+	}
+
+	return nil
+}
+
+func (c *Config) Autobind(s *ast.Schema) error {
+	if len(c.AutoBind) == 0 {
+		return nil
+	}
+	ps, err := packages.Load(&packages.Config{Mode: packages.LoadTypes}, c.AutoBind...)
+	if err != nil {
+		return err
+	}
+
+	for _, t := range s.Types {
+		if c.Models.UserDefined(t.Name) {
+			continue
+		}
+
+		for _, p := range ps {
+			if t := p.Types.Scope().Lookup(t.Name); t != nil {
+				c.Models.Add(t.Name(), t.Pkg().Path()+"."+t.Name())
+				break
+			}
+		}
+	}
+
+	for i, t := range c.Models {
+		for j, m := range t.Model {
+			pkg, typename := code.PkgAndType(m)
+
+			// skip anything that looks like an import path
+			if strings.Contains(pkg, "/") {
+				continue
+			}
+
+			for _, p := range ps {
+				if p.Name != pkg {
+					continue
+				}
+				if t := p.Types.Scope().Lookup(typename); t != nil {
+					c.Models[i].Model[j] = t.Pkg().Path() + "." + t.Name()
+					break
+				}
+			}
+		}
 	}
 
 	return nil
@@ -363,8 +473,10 @@ func (c *Config) InjectBuiltins(s *ast.Schema) {
 
 	// These are additional types that are injected if defined in the schema as scalars.
 	extraBuiltins := TypeMap{
-		"Time": {Model: StringList{"github.com/99designs/gqlgen/graphql.Time"}},
-		"Map":  {Model: StringList{"github.com/99designs/gqlgen/graphql.Map"}},
+		"Time":   {Model: StringList{"github.com/99designs/gqlgen/graphql.Time"}},
+		"Map":    {Model: StringList{"github.com/99designs/gqlgen/graphql.Map"}},
+		"Upload": {Model: StringList{"github.com/99designs/gqlgen/graphql.Upload"}},
+		"Any":    {Model: StringList{"github.com/99designs/gqlgen/graphql.Any"}},
 	}
 
 	for typeName, entry := range extraBuiltins {
@@ -377,9 +489,9 @@ func (c *Config) InjectBuiltins(s *ast.Schema) {
 func (c *Config) LoadSchema() (*ast.Schema, map[string]string, error) {
 	schemaStrings := map[string]string{}
 
-	var sources []*ast.Source
+	sources := make([]*ast.Source, len(c.SchemaFilename))
 
-	for _, filename := range c.SchemaFilename {
+	for i, filename := range c.SchemaFilename {
 		filename = filepath.ToSlash(filename)
 		var err error
 		var schemaRaw []byte
@@ -389,7 +501,7 @@ func (c *Config) LoadSchema() (*ast.Schema, map[string]string, error) {
 			os.Exit(1)
 		}
 		schemaStrings[filename] = string(schemaRaw)
-		sources = append(sources, &ast.Source{Name: filename, Input: schemaStrings[filename]})
+		sources[i] = &ast.Source{Name: filename, Input: schemaStrings[filename]}
 	}
 
 	schema, err := gqlparser.LoadSchema(sources...)

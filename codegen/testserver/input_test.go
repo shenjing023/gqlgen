@@ -2,20 +2,17 @@ package testserver
 
 import (
 	"context"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/99designs/gqlgen/client"
-	"github.com/99designs/gqlgen/handler"
+	"github.com/99designs/gqlgen/graphql/handler"
 	"github.com/stretchr/testify/require"
 )
 
 func TestInput(t *testing.T) {
 	resolvers := &Stub{}
-
-	srv := httptest.NewServer(handler.GraphQL(NewExecutableSchema(Config{Resolvers: resolvers})))
-
-	c := client.New(srv.URL)
+	srv := handler.NewDefaultServer(NewExecutableSchema(Config{Resolvers: resolvers}))
+	c := client.New(srv)
 
 	t.Run("when function errors on directives", func(t *testing.T) {
 		resolvers.QueryResolver.InputSlice = func(ctx context.Context, arg []string) (b bool, e error) {

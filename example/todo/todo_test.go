@@ -1,18 +1,16 @@
 package todo
 
 import (
-	"net/http/httptest"
 	"testing"
 
 	"github.com/99designs/gqlgen/client"
+	"github.com/99designs/gqlgen/graphql/handler"
 	"github.com/99designs/gqlgen/graphql/introspection"
-	"github.com/99designs/gqlgen/handler"
 	"github.com/stretchr/testify/require"
 )
 
 func TestTodo(t *testing.T) {
-	srv := httptest.NewServer(handler.GraphQL(NewExecutableSchema(New())))
-	c := client.New(srv.URL)
+	c := client.New(handler.NewDefaultServer(NewExecutableSchema(New())))
 
 	var resp struct {
 		CreateTodo struct{ ID string }
@@ -53,6 +51,43 @@ func TestTodo(t *testing.T) {
 		c.MustPost(`mutation { updateTodo(id: 5, changes:{done:true}) { text } }`, &resp)
 
 		require.Equal(t, "Very important", resp.UpdateTodo.Text)
+	})
+
+	t.Run("update the todo status by user id in mutation", func(t *testing.T) {
+		var resp struct {
+			UpdateTodo struct {
+				Text string
+				Done bool
+			}
+		}
+		c.MustPost(`mutation @user(id:2){ updateTodo(id: 3, changes:{done:true}) { text, done } }`, &resp)
+
+		require.Equal(t, "Somebody else's todo", resp.UpdateTodo.Text)
+	})
+
+	t.Run("update the todo status by user id in field", func(t *testing.T) {
+		var resp struct {
+			UpdateTodo struct {
+				Text string
+				Done bool
+			}
+		}
+		c.MustPost(`mutation { updateTodo(id: 3, changes:{done:true})@user(id:2) { text, done } }`, &resp)
+
+		require.Equal(t, "Somebody else's todo", resp.UpdateTodo.Text)
+	})
+
+	t.Run("failed update the todo status by user id in field", func(t *testing.T) {
+		var resp struct {
+			UpdateTodo *struct {
+				Text string
+				Done bool
+			}
+		}
+		err := c.Post(`mutation { updateTodo(id: 3, changes:{done:true}) { text, done } }`, &resp)
+		require.EqualError(t, err, "[{\"message\":\"you dont own that\",\"path\":[\"updateTodo\",\"done\"]}]")
+
+		require.Nil(t, resp.UpdateTodo)
 	})
 
 	t.Run("select with alias", func(t *testing.T) {
@@ -145,8 +180,7 @@ func TestTodo(t *testing.T) {
 }
 
 func TestSkipAndIncludeDirectives(t *testing.T) {
-	srv := httptest.NewServer(handler.GraphQL(NewExecutableSchema(New())))
-	c := client.New(srv.URL)
+	c := client.New(handler.NewDefaultServer(NewExecutableSchema(New())))
 
 	t.Run("skip on field", func(t *testing.T) {
 		var resp map[string]interface{}

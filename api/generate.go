@@ -8,18 +8,22 @@ import (
 	"github.com/99designs/gqlgen/plugin"
 	"github.com/99designs/gqlgen/plugin/modelgen"
 	"github.com/99designs/gqlgen/plugin/resolvergen"
+	"github.com/99designs/gqlgen/plugin/schemaconfig"
 	"github.com/pkg/errors"
 	"golang.org/x/tools/go/packages"
 )
 
 func Generate(cfg *config.Config, option ...Option) error {
 	_ = syscall.Unlink(cfg.Exec.Filename)
-	_ = syscall.Unlink(cfg.Model.Filename)
-
-	plugins := []plugin.Plugin{
-		modelgen.New(),
-		resolvergen.New(),
+	if cfg.Model.IsDefined() {
+		_ = syscall.Unlink(cfg.Model.Filename)
 	}
+
+	plugins := []plugin.Plugin{schemaconfig.New()}
+	if cfg.Model.IsDefined() {
+		plugins = append(plugins, modelgen.New())
+	}
+	plugins = append(plugins, resolvergen.New())
 
 	for _, o := range option {
 		o(cfg, &plugins)
@@ -36,11 +40,11 @@ func Generate(cfg *config.Config, option ...Option) error {
 	// Merge again now that the generated models have been injected into the typemap
 	data, err := codegen.BuildData(cfg)
 	if err != nil {
-		return errors.Wrap(err, "merging failed")
+		return errors.Wrap(err, "merging type systems failed")
 	}
 
 	if err = codegen.GenerateCode(data); err != nil {
-		return errors.Wrap(err, "generating core failed")
+		return errors.Wrap(err, "generating code failed")
 	}
 
 	for _, p := range plugins {
@@ -52,8 +56,10 @@ func Generate(cfg *config.Config, option ...Option) error {
 		}
 	}
 
-	if err := validate(cfg); err != nil {
-		return errors.Wrap(err, "validation failed")
+	if !cfg.SkipValidation {
+		if err := validate(cfg); err != nil {
+			return errors.Wrap(err, "validation failed")
+		}
 	}
 
 	return nil

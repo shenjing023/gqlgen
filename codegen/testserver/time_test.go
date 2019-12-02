@@ -2,20 +2,18 @@ package testserver
 
 import (
 	"context"
-	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/99designs/gqlgen/client"
-	"github.com/99designs/gqlgen/handler"
+	"github.com/99designs/gqlgen/graphql/handler"
 	"github.com/stretchr/testify/require"
 )
 
 func TestTime(t *testing.T) {
 	resolvers := &Stub{}
 
-	srv := httptest.NewServer(handler.GraphQL(NewExecutableSchema(Config{Resolvers: resolvers})))
-	c := client.New(srv.URL)
+	c := client.New(handler.NewDefaultServer(NewExecutableSchema(Config{Resolvers: resolvers})))
 
 	resolvers.QueryResolver.User = func(ctx context.Context, id int) (user *User, e error) {
 		return &User{}, nil

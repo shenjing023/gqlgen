@@ -10,11 +10,20 @@ type Subscription {
     thisShoudlntGetGenerated: Boolean
 }
 
-type MissingType implements MissingInterface & ExistingInterface {
+type MissingTypeNotNull implements MissingInterface & ExistingInterface {
+    name: String!
+    enum: MissingEnum!
+    int: MissingInterface!
+    existing: ExistingType!
+    missing2: MissingTypeNullable!
+}
+
+type MissingTypeNullable implements MissingInterface & ExistingInterface {
     name: String
     enum: MissingEnum
     int: MissingInterface
     existing: ExistingType
+    missing2: MissingTypeNotNull
 }
 
 input MissingInput {
@@ -31,13 +40,13 @@ interface MissingInterface {
     name: String
 }
 
-union MissingUnion = MissingType | ExistingType
+union MissingUnion = MissingTypeNotNull | MissingTypeNullable | ExistingType
 
 type ExistingType implements MissingInterface & ExistingInterface {
     name: String
     enum: ExistingEnum
     int: ExistingInterface
-    existing: MissingType
+    existing: MissingTypeNullable
 }
 
 input ExistingInput {
@@ -54,5 +63,23 @@ interface ExistingInterface {
     name: String
 }
 
-union ExistingUnion = MissingType | ExistingType
+union ExistingUnion = MissingTypeNotNull | MissingTypeNullable  | ExistingType
 
+"TypeWithDescription is a type with a description"
+type TypeWithDescription {
+    name: String
+}
+
+"EnumWithDescription is an enum with a description"
+enum EnumWithDescription {
+    CAT
+    DOG
+}
+
+"InterfaceWithDescription is an interface with a description"
+interface InterfaceWithDescription {
+    name: String
+}
+
+"UnionWithDescription is an union with a description"
+union UnionWithDescription = TypeWithDescription | ExistingType

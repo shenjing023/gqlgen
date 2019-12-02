@@ -21,6 +21,8 @@ func (m ModelMethods) WithContext(_ context.Context) bool {
 	return true
 }
 
+type Errors struct{}
+
 type Error struct {
 	ID string
 }
@@ -77,6 +79,10 @@ type OverlappingFields struct {
 	NewFoo int
 }
 
+type ObjectDirectivesWithCustomGoModel struct {
+	NullableText string // not *string, but schema is `String @toNull` type.
+}
+
 type FallbackToStringEncoding string
 
 const (
@@ -84,3 +90,17 @@ const (
 	FallbackToStringEncodingB FallbackToStringEncoding = "B"
 	FallbackToStringEncodingC FallbackToStringEncoding = "C"
 )
+
+type Primitive int
+
+func (p Primitive) Squared() int {
+	return int(p) * int(p)
+}
+
+type PrimitiveString string
+
+func (s PrimitiveString) Doubled() string {
+	return string(s) + string(s)
+}
+
+type Bytes []byte
